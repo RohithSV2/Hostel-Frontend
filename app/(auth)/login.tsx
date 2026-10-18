@@ -111,19 +111,6 @@ export default function LoginScreen() {
           >
             Sign In
           </Button>
-
-          {/* SERVER SETTINGS HINT */}
-          <TouchableOpacity 
-            style={styles.serverHint}
-            onPress={() => {
-              setServerUrl(CURRENT_BASE_URL);
-              setServerModalVisible(true);
-            }}
-          >
-            <Text style={{ fontSize: 11, color: colors.secondary, textAlign: 'center' }}>
-              ⚙️ Server: <Text style={{ textDecorationLine: 'underline' }}>{CURRENT_BASE_URL}</Text>
-            </Text>
-          </TouchableOpacity>
         </View>
       </ScrollView>
 
