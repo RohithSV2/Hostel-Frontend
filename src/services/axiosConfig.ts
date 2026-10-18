@@ -4,12 +4,8 @@ import { Platform } from 'react-native';
 
 // Default smart fallback depending on platform
 const getDefaultBaseUrl = () => {
-  if (Platform.OS === 'android') {
-    // 10.0.2.2 points to localhost host on Android Emulator
-    // Or users can customize it in login screen
-    return 'http://10.0.2.2:5000/api';
-  }
-  return 'http://localhost:5000/api';
+  // Production / Deployed default
+  return 'https://hostel-app-uiyd.onrender.com/api';
 };
 
 export let CURRENT_BASE_URL = getDefaultBaseUrl();
