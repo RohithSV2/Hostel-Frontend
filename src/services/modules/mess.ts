@@ -6,20 +6,27 @@ export const MessService = {
       const res = await api.get('/mess');
       return res.data;
     } catch (error) {
-      console.error("Mess Fetch Error:", error);
+      console.error('Mess Fetch Error:', error);
       return {};
     }
   },
 
-  // Now we expect 'menuData' to already have lowercase keys from the UI
   updateMenu: async (day: string, menuData: any) => {
     const payload = {
       day,
-      ...menuData // Spread the lowercase keys directly
+      ...menuData
     };
-
-    console.log("Service Sending:", payload);
     const res = await api.post('/mess/update', payload);
+    return res.data;
+  },
+
+  submitFeedback: async (feedback: { day: string; mealType: string; rating: number; comment?: string; studentId?: number }) => {
+    const res = await api.post('/mess/feedback', feedback);
+    return res.data;
+  },
+
+  getFeedbackStats: async () => {
+    const res = await api.get('/mess/feedback/stats');
     return res.data;
   }
 };

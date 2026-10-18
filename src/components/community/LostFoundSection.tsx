@@ -1,37 +1,53 @@
-import React, { useState } from 'react';
-import { View, FlatList, StyleSheet, TouchableOpacity, Image } from 'react-native';
-import { Text, Card, Avatar, FAB, Portal, Modal, TextInput, Button } from 'react-native-paper';
+import React, { useState, useEffect } from 'react';
+import { View, FlatList, StyleSheet, TouchableOpacity, Image, RefreshControl } from 'react-native';
+import { Text, Card, Avatar, FAB, Portal, Modal, TextInput, Button, Chip } from 'react-native-paper';
 import * as ImagePicker from 'expo-image-picker';
 import { colors } from '../../constants/colors';
-import { MOCK_LOST_FOUND_DATA, submitLostFoundItem } from '../../services/api';
-import { LostItem } from '../../types'; // <--- THIS FIXES THE TYPESCRIPT ERROR
-// Import the new auto-send function
-import { autoSendFoundMessage } from '../../services/api';
-
+import { fetchLostItems, submitLostFoundItem, resolveLostItemAPI, autoSendFoundMessage } from '../../services/api';
+import { LostItem } from '../../types';
 
 export default function LostFoundSection() {
-  // Explicitly tell State that this is an array of LostItem
-  const [lostItems, setLostItems] = useState<LostItem[]>(MOCK_LOST_FOUND_DATA as LostItem[]);
+  const [lostItems, setLostItems] = useState<LostItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   
   const [postModalVisible, setPostModalVisible] = useState(false);
   const [foundModalVisible, setFoundModalVisible] = useState(false);
-  const [loading, setLoading] = useState(false);
   
   // Form States
   const [newItem, setNewItem] = useState<Partial<LostItem>>({ type: 'LOST' });
   const [foundProof, setFoundProof] = useState({ contact: '', image: null as string | null });
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
 
-  // Image Picker Logic
+  useEffect(() => {
+    loadItems();
+  }, []);
+
+  const loadItems = async () => {
+    try {
+      const items = await fetchLostItems();
+      setLostItems(items || []);
+    } catch (e) {
+      console.error('Error fetching lost items:', e);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    loadItems();
+  };
+
   const pickImage = async (target: 'post' | 'proof') => {
     let result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsEditing: true,
       aspect: [4, 3],
-      quality: 1,
+      quality: 0.8,
     });
 
-    if (!result.canceled) {
+    if (!result.canceled && result.assets && result.assets.length > 0) {
       if (target === 'post') {
         setNewItem({ ...newItem, image: result.assets[0].uri });
       } else {
@@ -44,21 +60,24 @@ export default function LostFoundSection() {
     if (!newItem.item || !newItem.location) return;
     setLoading(true);
     
-    const postData: LostItem = { 
-      id: Date.now().toString(), 
-      item: newItem.item!,
-      location: newItem.location!,
-      contact: newItem.contact!,
-      date: 'Just Now',
-      type: 'LOST',
-      image: newItem.image
-    };
-    
-    await submitLostFoundItem(postData);
-    setLostItems([postData, ...lostItems]);
-    setLoading(false);
-    setPostModalVisible(false);
-    setNewItem({ type: 'LOST' });
+    try {
+      const postData: Partial<LostItem> = { 
+        item: newItem.item!,
+        location: newItem.location!,
+        contact: newItem.contact || 'Room Resident',
+        type: 'LOST',
+        image: newItem.image
+      };
+      
+      await submitLostFoundItem(postData);
+      setPostModalVisible(false);
+      setNewItem({ type: 'LOST' });
+      await loadItems();
+    } catch (e) {
+      alert('Failed to report item');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const openFoundModal = (id: string) => {
@@ -67,61 +86,88 @@ export default function LostFoundSection() {
     setFoundModalVisible(true);
   };
 
-  const handleSubmitFound = async () => { // Make it async
-  if (!foundProof.image || !foundProof.contact.trim()) return;
+  const handleSubmitFound = async () => {
+    if (!selectedItemId || !foundProof.contact.trim()) return;
 
-  // 1. Update UI locally
-  const updatedList = lostItems.map(item => 
-    item.id === selectedItemId ? { ...item, type: 'FOUND' as const, foundBy: foundProof.contact } : item
-  );
-  setLostItems(updatedList);
-
-  // 2. AUTO DM LOGIC
-  const itemDetails = lostItems.find(i => i.id === selectedItemId);
-  if (itemDetails) {
-      // Simulate sending DM to the person who lost it (itemDetails.contact)
-      await autoSendFoundMessage(itemDetails.item, foundProof.contact, itemDetails.contact);
-      alert(`Proof uploaded! A message has been sent to ${itemDetails.contact}`);
-  }
-
-  setFoundModalVisible(false);
-};
+    try {
+      await resolveLostItemAPI(selectedItemId, foundProof.contact);
+      const itemDetails = lostItems.find(i => i.id === selectedItemId);
+      if (itemDetails) {
+        await autoSendFoundMessage(itemDetails.item, foundProof.contact, itemDetails.contact);
+        alert(`Claim recorded! A notification message was sent.`);
+      }
+      setFoundModalVisible(false);
+      await loadItems();
+    } catch (e) {
+      alert('Failed to update status');
+    }
+  };
 
   return (
     <View style={styles.container}>
       <FlatList
         data={lostItems}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={{ paddingBottom: 80 }}
+        contentContainerStyle={{ padding: 16, paddingBottom: 80 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         renderItem={({ item }) => {
-          const isFound = item.type === 'FOUND';
+          const isFound = item.type === 'FOUND' || item.isResolved;
           return (
-            <Card style={[styles.card, isFound && { opacity: 0.8 }]}>
-              {/* NO MORE ERROR HERE because type is defined */}
-              {item.image && <Card.Cover source={{ uri: item.image }} style={{ height: 150 }} />}
+            <Card style={[styles.card, isFound && { opacity: 0.85 }]} mode="outlined">
+              {item.image && <Card.Cover source={{ uri: item.image }} style={{ height: 160 }} />}
               
               <Card.Title 
                 title={item.item} 
-                titleStyle={{ textDecorationLine: isFound ? 'line-through' : 'none' }}
+                titleStyle={{ textDecorationLine: isFound ? 'line-through' : 'none', fontWeight: 'bold' }}
                 subtitle={`${item.location} • ${item.date}`}
-                left={(props) => <Avatar.Icon {...props} icon={isFound ? "check" : "help"} style={{ backgroundColor: isFound ? 'green' : colors.error }} color="white" />}
+                left={(props) => (
+                  <Avatar.Icon 
+                    {...props} 
+                    icon={isFound ? "check-circle" : "help-circle"} 
+                    style={{ backgroundColor: isFound ? '#E8F5E9' : '#FFEBEE' }} 
+                    color={isFound ? 'green' : colors.error} 
+                  />
+                )}
+                right={(props) => (
+                  <Chip 
+                    compact 
+                    style={{ marginRight: 10, backgroundColor: isFound ? '#E8F5E9' : '#FFF3E0' }}
+                    textStyle={{ color: isFound ? 'green' : '#E65100', fontSize: 11, fontWeight: 'bold' }}
+                  >
+                    {isFound ? 'FOUND / RESOLVED' : 'LOST'}
+                  </Chip>
+                )}
               />
               <Card.Content>
-                <Text variant="bodyMedium">Contact: <Text style={{ fontWeight: 'bold' }}>{item.contact}</Text></Text>
-                {/* NO MORE ERROR HERE */}
-                {/* {isFound && <Text variant="bodyMedium" style={{ color: 'green', marginTop: 5 }}>Resolved by: {item.foundBy}</Text>} */}
+                <Text variant="bodySmall">Contact: <Text style={{ fontWeight: 'bold' }}>{item.contact}</Text></Text>
+                {item.foundBy && (
+                  <Text variant="labelSmall" style={{ color: 'green', marginTop: 4 }}>
+                    Claimed / Found by: {item.foundBy}
+                  </Text>
+                )}
               </Card.Content>
               
               {!isFound && (
                 <Card.Actions>
-                    <Button mode="contained-tonal" textColor={colors.primary} icon="eye-check" onPress={() => openFoundModal(item.id)}>
-                        I Found This!
-                    </Button>
+                  <Button 
+                    mode="contained-tonal" 
+                    textColor={colors.primary} 
+                    icon="eye-check" 
+                    onPress={() => openFoundModal(item.id)}
+                  >
+                    I Found This!
+                  </Button>
                 </Card.Actions>
               )}
             </Card>
           );
         }}
+        ListEmptyComponent={
+          <View style={{ alignItems: 'center', marginTop: 50 }}>
+            <Avatar.Icon size={50} icon="magnify" style={{ backgroundColor: '#EEE' }} color="#888" />
+            <Text style={{ marginTop: 10, color: '#888' }}>No active lost & found reports</Text>
+          </View>
+        }
       />
       
       <FAB icon="plus" label="Report Lost" style={styles.fab} onPress={() => setPostModalVisible(true)} color="white" />
@@ -129,28 +175,42 @@ export default function LostFoundSection() {
       {/* --- POST MODAL --- */}
       <Portal>
         <Modal visible={postModalVisible} onDismiss={() => setPostModalVisible(false)} contentContainerStyle={styles.modal}>
-          <Text variant="headlineSmall" style={{ fontWeight: 'bold', marginBottom: 15 }}>Report Lost Item</Text>
+          <Text variant="headlineSmall" style={{ fontWeight: 'bold', marginBottom: 12 }}>Report Lost Item</Text>
           <TouchableOpacity onPress={() => pickImage('post')} style={styles.imagePicker}>
             {newItem.image ? <Image source={{ uri: newItem.image }} style={styles.imgPreview} /> : 
-              <View style={{ alignItems: 'center' }}><Avatar.Icon size={40} icon="camera" style={{ backgroundColor: '#F0F0F0' }} color={colors.secondary} /><Text>Add Photo</Text></View>}
+              <View style={{ alignItems: 'center' }}>
+                <Avatar.Icon size={36} icon="camera" style={{ backgroundColor: '#F0F0F0' }} color={colors.secondary} />
+                <Text variant="labelSmall" style={{ color: '#888', marginTop: 4 }}>Add Photo (Optional)</Text>
+              </View>
+            }
           </TouchableOpacity>
-          <TextInput label="Item Name" onChangeText={t => setNewItem({...newItem, item: t})} mode="outlined" style={styles.input} />
-          <TextInput label="Location" onChangeText={t => setNewItem({...newItem, location: t})} mode="outlined" style={styles.input} />
-          <TextInput label="Contact" onChangeText={t => setNewItem({...newItem, contact: t})} mode="outlined" style={styles.input} />
-          <Button mode="contained" onPress={handlePostItem} loading={loading}>Post Report</Button>
+          <TextInput label="Item Name *" value={newItem.item || ''} onChangeText={t => setNewItem({...newItem, item: t})} mode="outlined" style={styles.input} />
+          <TextInput label="Last Seen Location *" value={newItem.location || ''} onChangeText={t => setNewItem({...newItem, location: t})} mode="outlined" style={styles.input} />
+          <TextInput label="Your Contact / Room No" value={newItem.contact || ''} onChangeText={t => setNewItem({...newItem, contact: t})} mode="outlined" style={styles.input} />
+          <Button mode="contained" onPress={handlePostItem} loading={loading}>Submit Report</Button>
         </Modal>
       </Portal>
 
       {/* --- FOUND MODAL --- */}
       <Portal>
         <Modal visible={foundModalVisible} onDismiss={() => setFoundModalVisible(false)} contentContainerStyle={styles.modal}>
-          <Text variant="headlineSmall" style={{ fontWeight: 'bold', color: 'green' }}>I Found This!</Text>
-          <TouchableOpacity onPress={() => pickImage('proof')} style={[styles.imagePicker, !foundProof.image && { borderColor: colors.error }]}>
-            {foundProof.image ? <Image source={{ uri: foundProof.image }} style={styles.imgPreview} /> : 
-              <View style={{ alignItems: 'center' }}><Text style={{ color: colors.error }}>Upload Proof (Required)</Text></View>}
-          </TouchableOpacity>
-          <TextInput label="My Contact" value={foundProof.contact} onChangeText={t => setFoundProof({...foundProof, contact: t})} mode="outlined" style={styles.input} />
-          <Button mode="contained" onPress={handleSubmitFound} disabled={!foundProof.image || !foundProof.contact} style={{ marginTop: 10 }}>Confirm</Button>
+          <Text variant="headlineSmall" style={{ fontWeight: 'bold', color: 'green', marginBottom: 8 }}>Found This Item?</Text>
+          <Text variant="bodySmall" style={{ color: '#666', marginBottom: 12 }}>
+            Let the owner know where they can collect it.
+          </Text>
+          <TextInput 
+            label="Your Contact / Room Number *" 
+            value={foundProof.contact} 
+            onChangeText={t => setFoundProof({...foundProof, contact: t})} 
+            mode="outlined" 
+            style={styles.input} 
+          />
+          <Button mode="contained" onPress={handleSubmitFound} buttonColor="green">
+            Confirm & Notify Owner
+          </Button>
+          <Button mode="text" onPress={() => setFoundModalVisible(false)} style={{ marginTop: 6 }}>
+            Cancel
+          </Button>
         </Modal>
       </Portal>
     </View>
@@ -158,11 +218,11 @@ export default function LostFoundSection() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 10 },
-  card: { marginBottom: 12, backgroundColor: 'white', overflow: 'hidden' },
+  container: { flex: 1, backgroundColor: colors.background },
+  card: { marginBottom: 12, backgroundColor: colors.surface, borderRadius: 14, borderColor: colors.border },
   fab: { position: 'absolute', margin: 16, right: 0, bottom: 0, backgroundColor: colors.primary },
-  modal: { backgroundColor: 'white', padding: 20, margin: 20, borderRadius: 10 },
-  input: { marginBottom: 12 },
-  imagePicker: { height: 150, backgroundColor: '#F0F0F0', borderRadius: 8, marginBottom: 15, justifyContent: 'center', alignItems: 'center', borderStyle: 'dashed', borderWidth: 1, borderColor: '#CCC' },
-  imgPreview: { width: '100%', height: '100%', borderRadius: 8 }
+  modal: { backgroundColor: colors.surface, padding: 20, margin: 20, borderRadius: 16 },
+  imagePicker: { height: 100, backgroundColor: colors.surfaceVariant, borderRadius: 12, borderWidth: 1, borderColor: colors.border, borderStyle: 'dashed', justifyContent: 'center', alignItems: 'center', marginBottom: 12 },
+  imgPreview: { width: '100%', height: '100%', borderRadius: 12 },
+  input: { marginBottom: 10, backgroundColor: colors.surface }
 });
